@@ -1,0 +1,18 @@
+rust_ffi_shared {
+    name: "notcat_lib",
+    crate_name: "notcat_lib",
+    srcs: ["src/lib.rs"],
+    stem: "libnotcat_lib",
+    edition: "2021",
+    vendor_available: true,
+    rustlibs: ["libjni","libnix",],
+    shared_libs: [
+       "liblog",
+    ],
+}
+
+cc_library_headers {
+    name: "notcat_lib_ffi_headers",
+    export_include_dirs: ["include"],
+    vendor_available: true,
+}
