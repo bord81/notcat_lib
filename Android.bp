@@ -1,11 +1,11 @@
 rust_ffi_shared {
-    name: "notcat_lib",
-    crate_name: "notcat_lib",
+    name: "notcat_lib_ffi",
+    crate_name: "notcat_lib_ffi",
     srcs: ["src/lib.rs"],
-    stem: "libnotcat_lib",
+    stem: "libnotcat_lib_ffi",
     edition: "2021",
     vendor_available: true,
-    rustlibs: ["libjni","libnix",],
+    rustlibs: ["libnix", "libjni"],
     shared_libs: [
        "liblog",
     ],
@@ -15,4 +15,16 @@ cc_library_headers {
     name: "notcat_lib_ffi_headers",
     export_include_dirs: ["include"],
     vendor_available: true,
+}
+
+rust_library {
+    name: "notcat_lib",
+    srcs: ["src/lib.rs"],
+    crate_name: "notcat_lib",
+    rustlibs: ["libnix", "libjni"],
+    stem: "libnotcat_lib",
+    vendor_available: true,
+    target: {
+        android: { enabled: true },
+    },
 }
