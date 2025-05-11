@@ -1,7 +1,8 @@
 use nix::libc::c_int;
+use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket};
 use std::ffi::{CStr, CString};
 use std::io::Write;
-use std::os::{raw::c_char, unix::net::UnixStream};
+use std::os::{fd::FromRawFd, fd::IntoRawFd, fd::RawFd, raw::c_char, unix::net::UnixStream};
 use std::{
     io::{self},
     net::Shutdown,
@@ -57,8 +58,25 @@ pub struct NotCatClient {
 }
 
 impl NotCatClient {
-    pub fn connect<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
+    pub fn connect<P: AsRef<Path> + std::convert::AsRef<std::ffi::OsStr>>(
+        path: P,
+    ) -> io::Result<Self> {
+        // TODO: add logging for I/O errors
+        let owned_fd = socket(
+            AddressFamily::Unix,
+            SockType::SeqPacket,
+            SockFlag::empty(),
+            None,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let fd: RawFd = owned_fd.into_raw_fd();
+
+        let addr =
+            UnixAddr::new(Path::new(&path)).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        connect(fd, &addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
         Ok(NotCatClient { stream })
     }
 
@@ -129,9 +147,9 @@ extern crate jni;
 #[cfg(target_os = "android")]
 mod notcat_jni {
     use super::NotCatClient;
+    use super::jni::JNIEnv;
     use jni::objects::{JClass, JString};
     use jni::sys::{jint, jlong};
-    use super::jni::JNIEnv;
 
     fn jstring_to_string(env: &JNIEnv, js: JString) -> Option<String> {
         env.get_string(js).ok().map(|s| s.into())
