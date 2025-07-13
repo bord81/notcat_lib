@@ -1,3 +1,6 @@
+use chrono::Datelike;
+use chrono::Timelike;
+use chrono::Utc;
 use nix::libc::c_int;
 use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket};
 use std::ffi::{CStr, CString};
@@ -9,6 +12,7 @@ use std::{
     path::Path,
     ptr,
 };
+
 extern "C" {
     fn __android_log_write(prio: i32, tag: *const i8, msg: *const i8) -> i32;
 }
@@ -101,15 +105,37 @@ impl NotCatClient {
     }
 
     pub fn log(&mut self, priority: LogPriority, msg: &[u8]) -> io::Result<()> {
-        let mut payload = Vec::with_capacity(8 + msg.len());
+        let mut payload = Vec::with_capacity(14 + msg.len());
         payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
         payload.extend_from_slice(&(priority as u8).to_be_bytes());
+        payload.extend_from_slice(&Self::get_timestamp_bytes());
         payload.extend_from_slice(msg);
         self.stream.write_all(&payload)
     }
 
     pub fn close(self) -> io::Result<()> {
         self.stream.shutdown(Shutdown::Both)
+    }
+
+    fn get_timestamp_bytes() -> [u8; 9] {
+        let now = Utc::now();
+        let year = now.year() as u16;
+        let month = now.month() as u8;
+        let day = now.day() as u8;
+        let hour = now.hour() as u8;
+        let minute = now.minute() as u8;
+        let second = now.second() as u8;
+        let millisecond = now.timestamp_subsec_millis() as u16;
+
+        let mut buf = [0u8; 9];
+        buf[0..2].copy_from_slice(&year.to_be_bytes());
+        buf[2] = month;
+        buf[3] = day;
+        buf[4] = hour;
+        buf[5] = minute;
+        buf[6] = second;
+        buf[7..9].copy_from_slice(&millisecond.to_be_bytes());
+        buf
     }
 }
 
