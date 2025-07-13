@@ -58,6 +58,14 @@ static CONN_MAGIC: u32 = 0xb05acafe;
 pub struct NotCatClient {
     stream: UnixStream,
 }
+#[repr(i32)]
+pub enum LogPriority {
+    Verbose = 0,
+    Debug = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4,
+}
 
 impl NotCatClient {
     pub fn connect<P: AsRef<Path> + std::convert::AsRef<std::ffi::OsStr>>(
@@ -92,9 +100,10 @@ impl NotCatClient {
         Ok(NotCatClient { stream })
     }
 
-    pub fn log(&mut self, msg: &[u8]) -> io::Result<()> {
-        let mut payload = Vec::with_capacity(4 + msg.len());
+    pub fn log(&mut self, priority: LogPriority, msg: &[u8]) -> io::Result<()> {
+        let mut payload = Vec::with_capacity(8 + msg.len());
         payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&(priority as u8).to_be_bytes());
         payload.extend_from_slice(msg);
         self.stream.write_all(&payload)
     }
@@ -131,6 +140,7 @@ pub unsafe extern "C" fn notcat_connect(path: *const c_char) -> *mut NotCatClien
 #[no_mangle]
 pub unsafe extern "C" fn notcat_log(
     handle: *mut NotCatClientHandle,
+    priority: c_int,
     message: *const c_char,
 ) -> c_int {
     if handle.is_null() || message.is_null() {
@@ -139,7 +149,15 @@ pub unsafe extern "C" fn notcat_log(
     let client = unsafe { &mut (*handle).inner };
     let c_msg = unsafe { CStr::from_ptr(message) };
     let bytes = c_msg.to_bytes();
-    match client.log(bytes) {
+    let priority = match priority {
+        0 => LogPriority::Verbose,
+        1 => LogPriority::Debug,
+        2 => LogPriority::Info,
+        3 => LogPriority::Warn,
+        4 => LogPriority::Error,
+        _ => return 0,
+    };
+    match client.log(priority, bytes) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -163,6 +181,7 @@ extern crate jni;
 mod notcat_jni {
     use super::NotCatClient;
     use super::jni::JNIEnv;
+    use crate::LogPriority;
     use jni::objects::{JClass, JString};
     use jni::sys::{jint, jlong};
 
@@ -196,6 +215,7 @@ mod notcat_jni {
         env: JNIEnv,
         _class: JClass,
         handle: jlong,
+        priority: jint,
         jmsg: JString,
     ) -> jint {
         if handle == 0 {
@@ -206,7 +226,15 @@ mod notcat_jni {
             Some(s) => s.into_bytes(),
             None => return -1,
         };
-        match client.log(&msg) {
+        let priority = match priority {
+            0 => LogPriority::Verbose,
+            1 => LogPriority::Debug,
+            2 => LogPriority::Info,
+            3 => LogPriority::Warn,
+            4 => LogPriority::Error,
+            _ => return 0,
+        };
+        match client.log(priority, &msg) {
             Ok(()) => 0,
             Err(_) => -1,
         }
