@@ -5,7 +5,7 @@ rust_ffi_shared {
     stem: "libnotcat_lib_ffi",
     edition: "2021",
     vendor_available: true,
-    rustlibs: ["libnix", "libjni"],
+    rustlibs: ["libnix", "libjni", "liblibc",],
     shared_libs: [
        "liblog",
     ],
@@ -21,7 +21,7 @@ rust_library {
     name: "notcat_lib",
     srcs: ["src/lib.rs"],
     crate_name: "notcat_lib",
-    rustlibs: ["libnix", "libjni"],
+    rustlibs: ["libnix", "libjni", "liblibc",],
     stem: "libnotcat_lib",
     vendor_available: true,
     target: {

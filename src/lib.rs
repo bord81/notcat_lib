@@ -53,6 +53,8 @@ fn log_android_native(prio: AndroidLogPriority, tag: &str, msg: &str) {
     }
 }
 
+static CONN_MAGIC: u32 = 0xb05acafe;
+
 pub struct NotCatClient {
     stream: UnixStream,
 }
@@ -76,12 +78,21 @@ impl NotCatClient {
 
         connect(fd, &addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let mut payload = Vec::with_capacity(9);
+        payload.extend_from_slice(&CONN_MAGIC.to_be_bytes());
+        payload.push(1); // version 1
+        let mut stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let pid = unsafe { libc::getpid() } as u32;
+        payload.extend_from_slice(&pid.to_be_bytes());
+        stream.write(&payload).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(NotCatClient { stream })
     }
 
     pub fn log(&mut self, msg: &[u8]) -> io::Result<()> {
-        self.stream.write_all(msg)
+        let mut payload = Vec::with_capacity(4 + msg.len());
+        payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        payload.extend_from_slice(msg);
+        self.stream.write_all(&payload)
     }
 
     pub fn close(self) -> io::Result<()> {
