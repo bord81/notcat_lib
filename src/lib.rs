@@ -78,13 +78,17 @@ impl NotCatClient {
 
         connect(fd, &addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        let mut payload = Vec::with_capacity(9);
+        let mut payload = Vec::with_capacity(10);
         payload.extend_from_slice(&CONN_MAGIC.to_be_bytes());
         payload.push(1); // version 1
         let mut stream = unsafe { UnixStream::from_raw_fd(fd) };
         let pid = unsafe { libc::getpid() } as u32;
         payload.extend_from_slice(&pid.to_be_bytes());
-        stream.write(&payload).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let sink_type: u8 = 3; // LocalFileSink and AndroidNativeSink
+        payload.push(sink_type);
+        stream
+            .write(&payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(NotCatClient { stream })
     }
 
