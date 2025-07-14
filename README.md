@@ -1,6 +1,6 @@
 # notcat_lib — NotCat Logging Client Library
 
-`notcat_lib` is a cross-language client library for interacting with the [`notcatd`](https://github.com/your-org/notcatd) logging daemon. It enables structured logging to a Unix domain socket from **Rust**, **C**, and **Kotlin (via JNI)**, acting as a flexible drop-in alternative to traditional `logcat` APIs.
+`notcat_lib` is a cross-language client library for interacting with the [`notcatd`](https://github.com/bord81/notcatd) logging daemon. It enables structured logging to a Unix domain socket from **Rust**, **C**, and **Kotlin (via JNI)**, acting as a flexible drop-in alternative to traditional `logcat` APIs.
 
 ---
 
