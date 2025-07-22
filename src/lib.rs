@@ -3,9 +3,9 @@ use chrono::Timelike;
 use chrono::Utc;
 use nix::libc::c_int;
 use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket};
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::io::Write;
-use std::os::{fd::FromRawFd, fd::IntoRawFd, fd::RawFd, raw::c_char, unix::net::UnixStream};
+use std::os::{fd::FromRawFd, fd::IntoRawFd, fd::RawFd, unix::net::UnixStream};
 use std::{
     io::{self},
     net::Shutdown,
@@ -14,7 +14,7 @@ use std::{
 };
 
 extern "C" {
-    fn __android_log_write(prio: i32, tag: *const i8, msg: *const i8) -> i32;
+    fn __android_log_write(prio: i32, tag: *const c_char, msg: *const c_char) -> i32;
 }
 
 #[allow(dead_code)]
