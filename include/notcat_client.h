@@ -5,8 +5,6 @@
 extern "C" {
 #endif
 
-typedef struct NotCatClientHandle NotCatClientHandle;
-
 typedef enum {
     LOG_VERBOSE = 0,
     LOG_DEBUG   = 1,
@@ -15,11 +13,16 @@ typedef enum {
     LOG_ERROR   = 4,
 } notcat_log_priority_t;
 
-NotCatClientHandle* notcat_connect(const char* path);
+typedef enum {
+    SINK_TYPE_LOCAL_FILE = 1,
+    SINK_TYPE_ANDROID_LOGCAT = 2,
+} notcat_sink_type_t;
 
-int notcat_log(NotCatClientHandle* client, int priority, const char* message);
+int notcat_init(unsigned char sink_type);
 
-int notcat_close(NotCatClientHandle* client);
+int notcat_log(int priority, const char* message);
+
+int notcat_close();
 
 #ifdef __cplusplus
 }
