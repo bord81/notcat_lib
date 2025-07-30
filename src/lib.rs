@@ -1,13 +1,16 @@
 use chrono::Datelike;
 use chrono::Timelike;
 use chrono::Utc;
+use nix::errno::Errno;
 use nix::libc::c_int;
 use nix::sys::socket::{
     AddressFamily, MsgFlags, SockFlag, SockType, UnixAddr, connect, send, socket,
 };
 use std::ffi::{CStr, CString, c_char};
 use std::os::{fd::IntoRawFd, fd::RawFd};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, RwLock};
+use std::thread;
+use std::time::Duration;
 use std::{
     io::{self},
     path::Path,
@@ -56,7 +59,9 @@ fn log_android_native(prio: AndroidLogPriority, tag: &str, msg: &str) {
     }
 }
 
-static FD_SERVER: OnceLock<RawFd> = OnceLock::new();
+static FD_SERVER: RwLock<RawFd> = RwLock::new(-1);
+
+static SERVER_LOST: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 
 static CONN_MAGIC: u32 = 0xb05acafe;
 
@@ -83,15 +88,31 @@ pub fn log_init(sink_type: u8) -> io::Result<()> {
         None,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    {
+        let mut fd_server = FD_SERVER.write().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to acquire write lock on FD_SERVER",
+            )
+        })?;
+        if *fd_server != -1 {
+            return Ok(()); // Already initialized
+        } else {
+            *fd_server = owned_fd.into_raw_fd();
+        }
+    }
 
-    FD_SERVER
-        .set(owned_fd.into_raw_fd())
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to set FD_SERVER"))?;
     let addr = UnixAddr::new(Path::new(SERVER_SOCKET))
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    connect(*FD_SERVER.get().unwrap(), &addr)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    {
+        let fd_server = FD_SERVER.read().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to acquire read lock on FD_SERVER",
+            )
+        })?;
+        connect(*fd_server, &addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    }
 
     let mut payload = Vec::with_capacity(10);
     payload.extend_from_slice(&CONN_MAGIC.to_be_bytes());
@@ -99,7 +120,79 @@ pub fn log_init(sink_type: u8) -> io::Result<()> {
     let pid = unsafe { libc::getpid() } as u32;
     payload.extend_from_slice(&pid.to_be_bytes());
     payload.push(sink_type);
-    send(*FD_SERVER.get().unwrap(), &payload, MsgFlags::MSG_DONTWAIT)?;
+    {
+        let fd_server = FD_SERVER.read().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to acquire read lock on FD_SERVER",
+            )
+        })?;
+        send(
+            *fd_server,
+            &payload,
+            MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+        )?;
+    }
+    thread::spawn(move || {
+        loop {
+            let (lock, cvar) = &SERVER_LOST;
+            let mut server_lost = lock.lock().unwrap();
+            if *server_lost {
+                let owned_fd = socket(
+                    AddressFamily::Unix,
+                    SockType::SeqPacket,
+                    SockFlag::empty(),
+                    None,
+                )
+                .unwrap();
+                loop {
+                    match FD_SERVER.try_write() {
+                        Ok(mut fd_server) => {
+                            *fd_server = owned_fd.into_raw_fd();
+                            break;
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                }
+                let addr = UnixAddr::new(Path::new(SERVER_SOCKET)).unwrap();
+                loop {
+                    match FD_SERVER.try_read() {
+                        Ok(fd_server) => {
+                            match connect(*fd_server, &addr) {
+                                Ok(_) => {
+                                    *server_lost = false;
+                                    let mut payload = Vec::with_capacity(10);
+                                    payload.extend_from_slice(&CONN_MAGIC.to_be_bytes());
+                                    payload.push(1); // version 1
+                                    let pid = unsafe { libc::getpid() } as u32;
+                                    payload.extend_from_slice(&pid.to_be_bytes());
+                                    payload.push(sink_type);
+                                    send(
+                                        *fd_server,
+                                        &payload,
+                                        MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+                                    )
+                                    .unwrap();
+                                    break;
+                                }
+                                Err(_) => {
+                                    thread::sleep(Duration::from_millis(100));
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                }
+                drop(server_lost);
+                continue;
+            }
+            drop(cvar.wait(server_lost).unwrap());
+        }
+    });
     Ok(())
 }
 
@@ -109,12 +202,35 @@ pub fn log(priority: LogPriority, msg: &[u8]) {
     payload.extend_from_slice(&(priority as u8).to_be_bytes());
     payload.extend_from_slice(&get_timestamp_bytes());
     payload.extend_from_slice(msg);
-    if let Err(e) = send(*FD_SERVER.get().unwrap(), &payload, MsgFlags::MSG_DONTWAIT) {
-        log_android_native(
-            AndroidLogPriority::Verbose,
-            "NotCatClient",
-            &format!("Failed to send log message: {}", e),
-        );
+    {
+        //TODO: add error handling for locking to add stability
+        let fd_server = FD_SERVER.read().unwrap();
+        if let Err(e) = send(
+            *fd_server,
+            &payload,
+            MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+        ) {
+            match e {
+                Errno::EPIPE | Errno::ENOTCONN => {
+                    log_android_native(
+                        AndroidLogPriority::Error,
+                        "NotCatClient",
+                        "Connection to NotCat server lost",
+                    );
+                    let (lock, cvar) = &SERVER_LOST;
+                    let mut server_lost = lock.lock().unwrap();
+                    *server_lost = true;
+                    cvar.notify_all();
+                }
+                _ => {
+                    log_android_native(
+                        AndroidLogPriority::Verbose,
+                        "NotCatClient",
+                        &format!("Failed to send log message: {}", e),
+                    );
+                }
+            }
+        }
     }
 }
 
