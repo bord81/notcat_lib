@@ -196,11 +196,14 @@ pub fn log_init(sink_type: u8) -> io::Result<()> {
     Ok(())
 }
 
-pub fn log(priority: LogPriority, msg: &[u8]) {
-    let mut payload = Vec::with_capacity(14 + msg.len());
-    payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+pub fn log(priority: LogPriority, tag: &[u8], msg: &[u8]) {
+    let payload_len = tag.len() + 1 + msg.len();
+    let mut payload = Vec::with_capacity(14 + payload_len);
+    payload.extend_from_slice(&(payload_len as u32).to_be_bytes());
     payload.extend_from_slice(&(priority as u8).to_be_bytes());
     payload.extend_from_slice(&get_timestamp_bytes());
+    payload.extend_from_slice(tag);
+    payload.push(0x20 as u8); // space between tag and message
     payload.extend_from_slice(msg);
     {
         //TODO: add error handling for locking to add stability
@@ -268,10 +271,12 @@ pub unsafe extern "C" fn notcat_init(sink_type: u8) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn notcat_log(priority: c_int, message: *const c_char) {
-    if message.is_null() {
+pub unsafe extern "C" fn notcat_log(priority: c_int, tag: *const c_char, message: *const c_char) {
+    if tag.is_null() || message.is_null() {
         return;
     }
+    let tag_str = unsafe { CStr::from_ptr(tag) };
+    let tag_bytes = tag_str.to_bytes();
     let c_msg = unsafe { CStr::from_ptr(message) };
     let bytes = c_msg.to_bytes();
     let priority = match priority {
@@ -282,7 +287,7 @@ pub unsafe extern "C" fn notcat_log(priority: c_int, message: *const c_char) {
         4 => LogPriority::Error,
         _ => LogPriority::Verbose,
     };
-    log(priority, bytes);
+    log(priority, tag_bytes, bytes);
 }
 
 #[no_mangle]
@@ -328,8 +333,13 @@ mod notcat_jni {
         env: JNIEnv,
         _class: JClass,
         priority: jint,
+        jtag: JString,
         jmsg: JString,
     ) {
+        let tag = match jstring_to_string(&env, jtag) {
+            Some(s) => s.into_bytes(),
+            None => return,
+        };
         let msg = match jstring_to_string(&env, jmsg) {
             Some(s) => s.into_bytes(),
             None => return,
@@ -342,7 +352,7 @@ mod notcat_jni {
             4 => LogPriority::Error,
             _ => LogPriority::Verbose,
         };
-        log(priority, &msg);
+        log(priority, &tag, &msg);
     }
 
     #[no_mangle]
