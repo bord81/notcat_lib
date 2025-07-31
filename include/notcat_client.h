@@ -20,7 +20,7 @@ typedef enum {
 
 int notcat_init(unsigned char sink_type);
 
-int notcat_log(int priority, const char* message);
+int notcat_log(int priority, const char* tag, const char* message);
 
 int notcat_close();
 
