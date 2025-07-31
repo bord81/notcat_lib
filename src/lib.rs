@@ -3,11 +3,13 @@ use chrono::Timelike;
 use chrono::Utc;
 use nix::errno::Errno;
 use nix::libc::c_int;
+use nix::sys::socket::Shutdown;
 use nix::sys::socket::{
-    AddressFamily, MsgFlags, SockFlag, SockType, UnixAddr, connect, send, socket,
+    AddressFamily, MsgFlags, SockFlag, SockType, UnixAddr, connect, send, shutdown, socket,
 };
 use std::ffi::{CStr, CString, c_char};
 use std::os::{fd::IntoRawFd, fd::RawFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -61,7 +63,9 @@ fn log_android_native(prio: AndroidLogPriority, tag: &str, msg: &str) {
 
 static FD_SERVER: RwLock<RawFd> = RwLock::new(-1);
 
-static SERVER_LOST: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static SERVER_LOST: (Mutex<bool>, Condvar) = (Mutex::new(true), Condvar::new());
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 static CONN_MAGIC: u32 = 0xb05acafe;
 
@@ -80,61 +84,11 @@ pub static LOCAL_FILE_SINK: u8 = 1;
 pub static ANDROID_LOGCAT_SINK: u8 = 2;
 
 pub fn log_init(sink_type: u8) -> io::Result<()> {
-    // TODO: add logging for I/O errors
-    let owned_fd = socket(
-        AddressFamily::Unix,
-        SockType::SeqPacket,
-        SockFlag::empty(),
-        None,
-    )
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    {
-        let mut fd_server = FD_SERVER.write().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to acquire write lock on FD_SERVER",
-            )
-        })?;
-        if *fd_server != -1 {
-            return Ok(()); // Already initialized
-        } else {
-            *fd_server = owned_fd.into_raw_fd();
-        }
-    }
-
-    let addr = UnixAddr::new(Path::new(SERVER_SOCKET))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    {
-        let fd_server = FD_SERVER.read().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to acquire read lock on FD_SERVER",
-            )
-        })?;
-        connect(*fd_server, &addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    }
-
-    let mut payload = Vec::with_capacity(10);
-    payload.extend_from_slice(&CONN_MAGIC.to_be_bytes());
-    payload.push(1); // version 1
-    let pid = unsafe { libc::getpid() } as u32;
-    payload.extend_from_slice(&pid.to_be_bytes());
-    payload.push(sink_type);
-    {
-        let fd_server = FD_SERVER.read().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to acquire read lock on FD_SERVER",
-            )
-        })?;
-        send(
-            *fd_server,
-            &payload,
-            MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
-        )?;
-    }
     thread::spawn(move || {
         loop {
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                return;
+            }
             let (lock, cvar) = &SERVER_LOST;
             let mut server_lost = lock.lock().unwrap();
             if *server_lost {
@@ -193,6 +147,17 @@ pub fn log_init(sink_type: u8) -> io::Result<()> {
             drop(cvar.wait(server_lost).unwrap());
         }
     });
+    loop {
+        match FD_SERVER.try_read() {
+            Ok(fd_server) => {
+                if *fd_server >= 0 {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     Ok(())
 }
 
@@ -221,9 +186,14 @@ pub fn log(priority: LogPriority, tag: &[u8], msg: &[u8]) {
                         "Connection to NotCat server lost",
                     );
                     let (lock, cvar) = &SERVER_LOST;
-                    let mut server_lost = lock.lock().unwrap();
-                    *server_lost = true;
-                    cvar.notify_all();
+                    let mut server_lost = lock.try_lock();
+                    if let Ok(ref mut server_lost) = server_lost {
+                        **server_lost = true;
+                        cvar.notify_all();
+                    } else {
+                        // If we can't lock, it means another thread is already handling the lost connection
+                        return;
+                    }
                 }
                 _ => {
                     log_android_native(
@@ -238,6 +208,27 @@ pub fn log(priority: LogPriority, tag: &[u8], msg: &[u8]) {
 }
 
 pub fn close() -> io::Result<()> {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+    let (lock, cvar) = &SERVER_LOST;
+    let mut server_lost = lock.lock().unwrap();
+    *server_lost = true;
+    cvar.notify_all();
+    drop(server_lost);
+    {
+        let fd_server = FD_SERVER.read().unwrap();
+        if *fd_server <= 0 {
+            return Ok(());
+        } else {
+            shutdown(*fd_server, Shutdown::Both).map_err(|e| {
+                log_android_native(
+                    AndroidLogPriority::Error,
+                    "NotCatClient",
+                    &format!("Failed to shutdown socket: {}", e),
+                );
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+        }
+    }
     Ok(())
 }
 
