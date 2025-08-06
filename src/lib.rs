@@ -161,15 +161,20 @@ pub fn log_init(sink_type: u8) -> io::Result<()> {
     Ok(())
 }
 
-pub fn log(priority: LogPriority, tag: &[u8], msg: &[u8]) {
-    let payload_len = tag.len() + 1 + msg.len();
+pub fn log(priority: LogPriority, tag: &str, msg: &str) {
+    let tag_trim = tag.trim();
+    let msg_trim = msg.trim();
+    if tag_trim.is_empty() || msg_trim.is_empty() {
+        return;
+    }
+    let payload_len = tag_trim.len() + 1 + msg_trim.len();
     let mut payload = Vec::with_capacity(14 + payload_len);
     payload.extend_from_slice(&(payload_len as u32).to_be_bytes());
     payload.extend_from_slice(&(priority as u8).to_be_bytes());
     payload.extend_from_slice(&get_timestamp_bytes());
-    payload.extend_from_slice(tag);
+    payload.extend_from_slice(tag_trim.as_bytes());
     payload.push(0x20 as u8); // space between tag and message
-    payload.extend_from_slice(msg);
+    payload.extend_from_slice(msg_trim.as_bytes());
     {
         //TODO: add error handling for locking to add stability
         let fd_server = FD_SERVER.read().unwrap();
@@ -267,9 +272,10 @@ pub unsafe extern "C" fn notcat_log(priority: c_int, tag: *const c_char, message
         return;
     }
     let tag_str = unsafe { CStr::from_ptr(tag) };
-    let tag_bytes = tag_str.to_bytes();
+    let tag = tag_str.to_string_lossy();
     let c_msg = unsafe { CStr::from_ptr(message) };
-    let bytes = c_msg.to_bytes();
+
+    let msg = c_msg.to_string_lossy();
     let priority = match priority {
         0 => LogPriority::Verbose,
         1 => LogPriority::Debug,
@@ -278,7 +284,7 @@ pub unsafe extern "C" fn notcat_log(priority: c_int, tag: *const c_char, message
         4 => LogPriority::Error,
         _ => LogPriority::Verbose,
     };
-    log(priority, tag_bytes, bytes);
+    log(priority, tag.as_ref(), msg.as_ref());
 }
 
 #[no_mangle]
@@ -328,11 +334,11 @@ mod notcat_jni {
         jmsg: JString,
     ) {
         let tag = match jstring_to_string(&env, jtag) {
-            Some(s) => s.into_bytes(),
+            Some(s) => s,
             None => return,
         };
         let msg = match jstring_to_string(&env, jmsg) {
-            Some(s) => s.into_bytes(),
+            Some(s) => s,
             None => return,
         };
         let priority = match priority {
@@ -356,4 +362,59 @@ mod notcat_jni {
             Err(_) => -1,
         }
     }
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! logv {
+    ($a:expr, $fmt:expr $(, $args:expr)+ $(,)?) => {
+        log(LogPriority::Verbose, $a, format!($fmt $(, $args)+).as_str())
+    };
+    ($a:expr, $fmt:expr $(,)?) => {
+        log(LogPriority::Verbose, $a, format!($fmt).as_str())
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! logd {
+    ($a:expr, $fmt:expr $(, $args:expr)+ $(,)?) => {
+        log(LogPriority::Debug, $a, format!($fmt $(, $args)+).as_str())
+    };
+    ($a:expr, $fmt:expr $(,)?) => {
+        log(LogPriority::Debug, $a, format!($fmt).as_str())
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! logi {
+    ($a:expr, $fmt:expr $(, $args:expr)+ $(,)?) => {
+        log(LogPriority::Info, $a, format!($fmt $(, $args)+).as_str())
+    };
+    ($a:expr, $fmt:expr $(,)?) => {
+        log(LogPriority::Info, $a, format!($fmt).as_str())
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! logw {
+    ($a:expr, $fmt:expr $(, $args:expr)+ $(,)?) => {
+        log(LogPriority::Warn, $a, format!($fmt $(, $args)+).as_str())
+    };
+    ($a:expr, $fmt:expr $(,)?) => {
+        log(LogPriority::Warn, $a, format!($fmt).as_str())
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! loge {
+    ($a:expr, $fmt:expr $(, $args:expr)+ $(,)?) => {
+        log(LogPriority::Error, $a, format!($fmt $(, $args)+).as_str())
+    };
+    ($a:expr, $fmt:expr $(,)?) => {
+        log(LogPriority::Error, $a, format!($fmt).as_str())
+    };
 }
